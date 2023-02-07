@@ -1,0 +1,5 @@
+astropy
+poliastro
+shapely
+h3
+databricks-mosaic

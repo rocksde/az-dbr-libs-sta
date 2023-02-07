@@ -1,0 +1,106 @@
+variables:
+  - name: planName
+    value: $(TF_VAR_SERVICE_CONNECTION).plan
+  - name: tfVersion
+    value: "1.3.6"
+  - name: workdir
+    value: "$(System.DefaultWorkingDirectory)/tf"
+trigger: none
+stages:
+  - stage: Plan
+    jobs:
+      - job: TfPlan
+        displayName: Plan resources deployment
+        pool: "$(TF_VAR_CONTAINER_POOL)"
+        variables:
+          workingDirectory: "$(workdir)"
+          azureServiceConnectionName: "$(TF_VAR_SERVICE_CONNECTION)"
+          backendAzureRmStorageAccountName: "$(TF_VAR_STA_NAME)"
+          backendAzureRmResourceGroupName: "$(TF_VAR_STA_RSG_NAME)"
+          backendAzureRmContainerName: "$(TF_VAR_STA_CONTAINER_NAME)"
+        steps:
+          - task: TerraformInstaller@0
+            displayName: "Install Terraform CLI"
+            inputs:
+              terraformVersion: $(tfVersion)
+          - task: replacetokens@5
+            displayName: "generate TF config"
+            inputs:
+              targetFiles: '**/*.tf'
+              encoding: 'auto'
+              tokenPattern: 'default'
+              writeBOM: true
+              actionOnMissing: 'warn'
+              keepToken: false
+              actionOnNoFiles: 'continue'
+              enableTransforms: false
+              enableRecursion: false
+              useLegacyPattern: false
+              enableTelemetry: true
+          - task: TerraformTaskV2@2
+            displayName: "Terraform init"
+            inputs:
+              provider: "azurerm"
+              command: "init"
+              workingDirectory: $(workingDirectory)
+              backendServiceArm: ${{ variables.azureServiceConnectionName }}
+              backendAzureRmResourceGroupName: $(backendAzureRmResourceGroupName)
+              backendAzureRmStorageAccountName: $(backendAzureRmStorageAccountName)
+              backendAzureRmContainerName: $(backendAzureRmContainerName)
+              backendAzureRmKey: "$(TF_VAR_STA_STATE_FILE)"
+          - task: TerraformTaskV2@2
+            displayName: "Terraform plan"
+            inputs:
+              provider: "azurerm"
+              command: "plan"
+              commandOptions: '-out $(Build.ArtifactStagingDirectory)/$(planName)'
+              workingDirectory: "$(workingDirectory)"
+              environmentServiceNameAzureRM: ${{ variables.azureServiceConnectionName }}
+          - publish: "$(Build.ArtifactStagingDirectory)/$(planName)"
+            displayName: "Publish Artifact: $(planName) here: $(Build.ArtifactStagingDirectory)"
+            artifact: "$(planName)"
+  - stage: Apply
+    dependsOn: Plan
+    jobs:
+      - deployment: Apply
+        environment: "tf-$(TF_VAR_WORKLOAD_NAME)-$(TF_VAR_ENV)"
+        displayName: Apply resource deployment
+        pool: "$(TF_VAR_CONTAINER_POOL)"
+        variables:
+          workingDirectory: "$(workdir)"
+          azureServiceConnectionName: "$(TF_VAR_SERVICE_CONNECTION)"
+          backendAzureRmStorageAccountName: "$(TF_VAR_STA_NAME)"
+          backendAzureRmResourceGroupName: "$(TF_VAR_STA_RSG_NAME)"
+          backendAzureRmContainerName: "$(TF_VAR_STA_CONTAINER_NAME)"
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - task: TerraformInstaller@0
+                  displayName: "Install Terraform CLI"
+                  inputs:
+                    terraformVersion: $(tfVersion)
+                - task: TerraformTaskV2@2
+                  displayName: "Terraform init"
+                  inputs:
+                    provider: "azurerm"
+                    command: "init"
+                    workingDirectory: $(workingDirectory)
+                    backendServiceArm: ${{ variables.azureServiceConnectionName }}
+                    backendAzureRmResourceGroupName: $(backendAzureRmResourceGroupName)
+                    backendAzureRmStorageAccountName: $(backendAzureRmStorageAccountName)
+                    backendAzureRmContainerName: $(backendAzureRmContainerName)
+                    backendAzureRmKey: "$(TF_VAR_STA_STATE_FILE)"
+                - task: DownloadPipelineArtifact@2
+                  inputs:
+                    artifact: "$(planName)"
+                    path: $(workingDirectory)
+                - task: TerraformTaskV2@2
+                  timeoutInMinutes: 90
+                  displayName: "Terraform apply"
+                  inputs:
+                    provider: "azurerm"
+                    command: "apply"
+                    commandOptions: '$(workingDirectory)/$(planName)'
+                    workingDirectory: "$(workingDirectory)"
+                    environmentServiceNameAzureRM: ${{ variables.azureServiceConnectionName }}
